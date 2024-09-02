@@ -70,6 +70,61 @@ static int tag_compose(const char *tag, const char *unit_name,
     return 0;
 }
 
+static int append_enumerate_data(struct flb_systemd_config *ctx, struct cfl_kvlist *kvlist)
+{
+    int i;
+    int ret = FLB_EVENT_ENCODER_SUCCESS;
+    struct cfl_list *head;
+    struct cfl_kvpair *kvpair = NULL;
+    struct cfl_variant *v = NULL;
+    struct cfl_array *array = NULL;
+
+    /* Interpret cfl_kvlist as logs type of events later. */
+    cfl_list_foreach(head, &kvlist->list) {
+        kvpair = cfl_list_entry(head, struct cfl_kvpair, _head);
+        if (ret == FLB_EVENT_ENCODER_SUCCESS) {
+            ret = flb_log_event_encoder_append_body_string_length(
+                    ctx->log_encoder, cfl_sds_len(kvpair->key));
+        }
+
+        if (ret == FLB_EVENT_ENCODER_SUCCESS) {
+            ret = flb_log_event_encoder_append_body_string_body(
+                    ctx->log_encoder, kvpair->key, cfl_sds_len(kvpair->key));
+        }
+
+        v = kvpair->val;
+        if (v->type == CFL_VARIANT_STRING) {
+            if (ret == FLB_EVENT_ENCODER_SUCCESS) {
+                ret = flb_log_event_encoder_append_body_string(
+                        ctx->log_encoder, v->data.as_string, cfl_variant_size_get(v));
+            }
+        }
+        else if (v->type == CFL_VARIANT_ARRAY) {
+            if (ret == FLB_EVENT_ENCODER_SUCCESS) {
+                ret = flb_log_event_encoder_body_begin_array(ctx->log_encoder);
+            }
+
+            array = v->data.as_array;
+            for (i = 0; i < array->entry_count; i++) {
+                if (ret == FLB_EVENT_ENCODER_SUCCESS) {
+                    if (array->entries[i]->type != CFL_VARIANT_STRING) {
+                        continue;
+                    }
+                    ret = flb_log_event_encoder_append_body_string(
+                            ctx->log_encoder, array->entries[i]->data.as_string,
+                            cfl_variant_size_get(array->entries[i]));
+                }
+            }
+
+            if (ret == FLB_EVENT_ENCODER_SUCCESS) {
+                ret = flb_log_event_encoder_body_commit_array(ctx->log_encoder);
+            }
+        }
+    }
+
+    return ret;
+}
+
 static int in_systemd_collect(struct flb_input_instance *ins,
                               struct flb_config *config, void *in_context)
 {
@@ -103,9 +158,6 @@ static int in_systemd_collect(struct flb_input_instance *ins,
     struct flb_time tm;
     struct cfl_kvlist *kvlist = NULL;
     struct cfl_variant *cfl_val = NULL;
-    struct cfl_list *head;
-    struct cfl_kvpair *kvpair = NULL;
-    struct cfl_variant *v = NULL;
     struct cfl_array *array = NULL;
     struct cfl_variant *tmp_val = NULL;
     flb_sds_t list_key = NULL;
@@ -294,7 +346,7 @@ static int in_systemd_collect(struct flb_input_instance *ins,
                 case CFL_VARIANT_STRING:
                     search_key = flb_sds_create_len(list_key, key_len);
                     if (search_key != NULL) {
-                        cfl_kvlist_remove(kvlist, list_key);
+                        cfl_kvlist_remove(kvlist, search_key);
                     }
                     flb_sds_destroy(search_key);
 
@@ -338,47 +390,7 @@ static int in_systemd_collect(struct flb_input_instance *ins,
         rows++;
 
         /* Interpret cfl_kvlist as logs type of events later. */
-        cfl_list_foreach(head, &kvlist->list) {
-            kvpair = cfl_list_entry(head, struct cfl_kvpair, _head);
-            if (ret == FLB_EVENT_ENCODER_SUCCESS) {
-                ret = flb_log_event_encoder_append_body_string_length(
-                        ctx->log_encoder, cfl_sds_len(kvpair->key));
-            }
-
-            if (ret == FLB_EVENT_ENCODER_SUCCESS) {
-                ret = flb_log_event_encoder_append_body_string_body(
-                        ctx->log_encoder, kvpair->key, cfl_sds_len(kvpair->key));
-            }
-
-            v = kvpair->val;
-            if (v->type == CFL_VARIANT_STRING) {
-                if (ret == FLB_EVENT_ENCODER_SUCCESS) {
-                    ret = flb_log_event_encoder_append_body_string(
-                            ctx->log_encoder, v->data.as_string, cfl_variant_size_get(v));
-                }
-            }
-            else if (v->type == CFL_VARIANT_ARRAY) {
-                if (ret == FLB_EVENT_ENCODER_SUCCESS) {
-                    ret = flb_log_event_encoder_body_begin_array(ctx->log_encoder);
-                }
-
-                array = v->data.as_array;
-                for (i = 0; i < array->entry_count; i++) {
-                    if (ret == FLB_EVENT_ENCODER_SUCCESS) {
-                        if (array->entries[i]->type != CFL_VARIANT_STRING) {
-                            continue;
-                        }
-                        ret = flb_log_event_encoder_append_body_string(
-                                ctx->log_encoder, array->entries[i]->data.as_string,
-                                cfl_variant_size_get(array->entries[i]));
-                    }
-                }
-
-                if (ret == FLB_EVENT_ENCODER_SUCCESS) {
-                    ret = flb_log_event_encoder_body_commit_array(ctx->log_encoder);
-                }
-            }
-        }
+        ret = append_enumerate_data(ctx, kvlist);
 
         if (kvlist) {
             cfl_kvlist_destroy(kvlist);

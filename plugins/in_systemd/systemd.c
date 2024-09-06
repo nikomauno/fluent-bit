@@ -125,14 +125,147 @@ static int append_enumerate_data(struct flb_systemd_config *ctx, struct cfl_kvli
     return ret;
 }
 
+static int systemd_enumerate_data_store(struct flb_config *config,
+                                        struct flb_input_instance *ins,
+                                        void *plugin_context,
+                                        void *format_context,
+                                        const void *data, size_t data_size)
+{
+    int i;
+    int len;
+    int key_len;
+    size_t length = data_size;
+    const char *sep;
+    const char *key;
+    const char *val;
+    char *buf = NULL;
+    struct cfl_kvlist *kvlist = format_context;
+    struct flb_systemd_config *ctx = plugin_context;
+    struct cfl_variant *cfl_val = NULL;
+    struct cfl_array *array = NULL;
+    struct cfl_variant *tmp_val = NULL;
+    flb_sds_t list_key = NULL;
+    flb_sds_t search_key = NULL;
+
+    key = (const char *) data;
+    sep = strchr(key, '=');
+    if (sep == NULL) {
+        return -2;
+    }
+
+    len = (sep - key);
+    key_len = len;
+
+    if (ctx->lowercase == FLB_TRUE) {
+        /*
+         * Ensure buf to have enough space for the key because the libsystemd
+         * might return larger data than the threshold.
+         */
+        if (buf == NULL) {
+            buf = flb_sds_create_len(NULL, ctx->threshold);
+        }
+        if (flb_sds_alloc(buf) < len) {
+            buf = flb_sds_increase(buf, len - flb_sds_alloc(buf));
+        }
+        for (i = 0; i < len; i++) {
+            buf[i] = tolower(key[i]);
+        }
+        list_key = flb_sds_create_len(buf, key_len);
+    }
+    else {
+        list_key = flb_sds_create_len(key, key_len);
+    }
+
+    if (!list_key) {
+        return -1;
+    }
+
+    /* Check existence */
+    cfl_val = NULL;
+    cfl_val = cfl_kvlist_fetch_s(kvlist, list_key, key_len);
+
+    val = sep + 1;
+    len = length - (sep - key) - 1;
+
+    /* Initialize variable for cfl_variant operations. */
+    search_key = NULL;
+    tmp_val = NULL;
+
+    /* Store cfl_kvlist format at first to detect duplicated keys */
+    if (cfl_val) {
+        switch(cfl_val->type) {
+        case CFL_VARIANT_STRING:
+            tmp_val = cfl_variant_create_from_string(cfl_val->data.as_string);
+            if (!tmp_val) {
+                return -1;
+            }
+            break;
+        case CFL_VARIANT_ARRAY:
+            /* Just a reference */
+            tmp_val = cfl_val;
+            break;
+        default:
+            /* nop */
+            break;
+        }
+
+        switch(tmp_val->type) {
+        case CFL_VARIANT_STRING:
+            search_key = flb_sds_create_len(list_key, key_len);
+            if (search_key != NULL) {
+                cfl_kvlist_remove(kvlist, search_key);
+            }
+            flb_sds_destroy(search_key);
+
+            array = cfl_array_create(8);
+            if (!array) {
+                cfl_variant_destroy(tmp_val);
+                goto error;
+            }
+            if (cfl_array_resizable(array, CFL_TRUE) == -1) {
+                cfl_array_destroy(array);
+                cfl_variant_destroy(tmp_val);
+                goto error;
+            }
+
+            cfl_array_append_string_s(array,
+                                      tmp_val->data.as_string,
+                                      strlen(tmp_val->data.as_string),
+                                      CFL_FALSE);
+            cfl_array_append_string_s(array, (char *)val, strlen(val), CFL_FALSE);
+            cfl_kvlist_insert_array_s(kvlist, list_key, key_len, array);
+            cfl_variant_destroy(tmp_val);
+            break;
+        case CFL_VARIANT_ARRAY:
+            /* Just appending the newly arrived field(s) */
+            array = tmp_val->data.as_array;
+            cfl_array_append_string_s(array, (char *)val, strlen(val), CFL_FALSE);
+            break;
+        default:
+            /* nop */
+            break;
+        }
+    }
+    else {
+        cfl_kvlist_insert_string_s(kvlist, list_key, key_len,
+                                   (char *)val, strlen(val), CFL_FALSE);
+    }
+
+    flb_sds_destroy(list_key);
+
+    return 0;
+
+error:
+    flb_sds_destroy(list_key);
+
+    return -1;
+}
+
 static int in_systemd_collect(struct flb_input_instance *ins,
                               struct flb_config *config, void *in_context)
 {
     int ret;
     int ret_j;
-    int i;
-    int len;
-    int key_len;
     int entries = 0;
     int skip_entries = 0;
     int rows = 0;
@@ -140,10 +273,7 @@ static int in_systemd_collect(struct flb_input_instance *ins,
     long nsec;
     uint64_t usec;
     size_t length;
-    size_t threshold;
-    const char *sep;
     const char *key;
-    const char *val;
     char *buf = NULL;
 #ifdef FLB_HAVE_SQLDB
     char *cursor = NULL;
@@ -157,11 +287,6 @@ static int in_systemd_collect(struct flb_input_instance *ins,
     struct flb_systemd_config *ctx = in_context;
     struct flb_time tm;
     struct cfl_kvlist *kvlist = NULL;
-    struct cfl_variant *cfl_val = NULL;
-    struct cfl_array *array = NULL;
-    struct cfl_variant *tmp_val = NULL;
-    flb_sds_t list_key = NULL;
-    flb_sds_t search_key = NULL;
 
     /* Restricted by mem_buf_limit */
     if (flb_input_buf_paused(ins) == FLB_TRUE) {
@@ -185,7 +310,7 @@ static int in_systemd_collect(struct flb_input_instance *ins,
     }
 
     if (ctx->lowercase == FLB_TRUE) {
-        ret = sd_journal_get_data_threshold(ctx->j, &threshold);
+        ret = sd_journal_get_data_threshold(ctx->j, &ctx->threshold);
         if (ret != 0) {
             flb_plg_error(ctx->ins,
                           "error setting up systemd data. "
@@ -280,110 +405,16 @@ static int in_systemd_collect(struct flb_input_instance *ins,
                 length--;
             }
 
-            sep = strchr(key, '=');
-            if (sep == NULL) {
+            ret = systemd_enumerate_data_store(config, ctx->ins,
+                                               (void *)ctx, (void *)kvlist,
+                                               key, length);
+            if (ret == -2) {
                 skip_entries++;
                 continue;
             }
-
-            len = (sep - key);
-            key_len = len;
-
-            if (ctx->lowercase == FLB_TRUE) {
-                /*
-                 * Ensure buf to have enough space for the key because the libsystemd
-                 * might return larger data than the threshold.
-                 */
-                if (buf == NULL) {
-                    buf = flb_sds_create_len(NULL, threshold);
-                }
-                if (flb_sds_alloc(buf) < len) {
-                    buf = flb_sds_increase(buf, len - flb_sds_alloc(buf));
-                }
-                for (i = 0; i < len; i++) {
-                    buf[i] = tolower(key[i]);
-                }
-                list_key = flb_sds_create_len(buf, key_len);
-            }
-            else {
-                list_key = flb_sds_create_len(key, key_len);
-            }
-
-            if (!list_key) {
+            else if (ret == -1) {
                 continue;
             }
-
-            /* Check existence */
-            cfl_val = NULL;
-            cfl_val = cfl_kvlist_fetch_s(kvlist, list_key, key_len);
-
-            val = sep + 1;
-            len = length - (sep - key) - 1;
-
-            /* Initialize variable for cfl_variant operations. */
-            search_key = NULL;
-            tmp_val = NULL;
-
-            /* Store cfl_kvlist format at first to detect duplicated keys */
-            if (cfl_val) {
-                switch(cfl_val->type) {
-                case CFL_VARIANT_STRING:
-                    tmp_val = cfl_variant_create_from_string(cfl_val->data.as_string);
-                    if (!tmp_val) {
-                        continue;
-                    }
-                    break;
-                case CFL_VARIANT_ARRAY:
-                    /* Just a reference */
-                    tmp_val = cfl_val;
-                    break;
-                default:
-                    /* nop */
-                    break;
-                }
-
-                switch(tmp_val->type) {
-                case CFL_VARIANT_STRING:
-                    search_key = flb_sds_create_len(list_key, key_len);
-                    if (search_key != NULL) {
-                        cfl_kvlist_remove(kvlist, search_key);
-                    }
-                    flb_sds_destroy(search_key);
-
-                    array = cfl_array_create(8);
-                    if (!array) {
-                        cfl_variant_destroy(tmp_val);
-                        continue;
-                    }
-                    if (cfl_array_resizable(array, CFL_TRUE) == -1) {
-                        cfl_array_destroy(array);
-                        cfl_variant_destroy(tmp_val);
-                        continue;
-                    }
-
-                    cfl_array_append_string_s(array,
-                                              tmp_val->data.as_string,
-                                              strlen(tmp_val->data.as_string),
-                                              CFL_FALSE);
-                    cfl_array_append_string_s(array, (char *)val, strlen(val), CFL_FALSE);
-                    cfl_kvlist_insert_array_s(kvlist, list_key, key_len, array);
-                    cfl_variant_destroy(tmp_val);
-                    break;
-                case CFL_VARIANT_ARRAY:
-                    /* Just appending the newly arrived field(s) */
-                    array = tmp_val->data.as_array;
-                    cfl_array_append_string_s(array, (char *)val, strlen(val), CFL_FALSE);
-                    break;
-                default:
-                    /* nop */
-                    break;
-                }
-            }
-            else {
-                cfl_kvlist_insert_string_s(kvlist, list_key, key_len,
-                                           (char *)val, strlen(val), CFL_FALSE);
-            }
-            flb_sds_destroy(list_key);
 
             entries++;
         }

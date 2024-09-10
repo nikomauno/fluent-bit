@@ -647,6 +647,74 @@ static int in_systemd_exit(void *data, struct flb_config *config)
     return 0;
 }
 
+static int cb_systemd_format_test(struct flb_config *config,
+                                  struct flb_input_instance *ins,
+                                  void *plugin_context,
+                                  const void *data, size_t bytes,
+                                  void **out_data, size_t *out_size)
+{
+    int ret;
+    struct flb_systemd_config *ctx = plugin_context;
+    struct flb_time tm;
+    struct cfl_list *head = NULL;
+    struct cfl_list *kvs = NULL;
+    struct cfl_split_entry *cur = NULL;
+    struct cfl_kvlist *kvlist = NULL;
+    const char *keys;
+
+    ret = flb_log_event_encoder_begin_record(ctx->log_encoder);
+
+    if (ret == FLB_EVENT_ENCODER_SUCCESS) {
+        ret = flb_log_event_encoder_set_timestamp(ctx->log_encoder, &tm);
+    }
+
+    /* create an empty kvlist as the labels */
+    kvlist = cfl_kvlist_create();
+    if (!kvlist) {
+        flb_plg_error(ctx->ins, "error allocating kvlist");
+        return -1;
+    }
+
+    keys = (const char *) data;
+    kvs = cfl_utils_split(keys, '\n', -1 );
+    if (kvs == NULL) {
+        goto split_error;
+    }
+
+    cfl_list_foreach(head, kvs) {
+        cur = cfl_list_entry(head, struct cfl_split_entry, _head);
+        ret = systemd_enumerate_data_store(config, ctx->ins,
+                                           (void *)ctx, (void *)kvlist,
+                                           cur->value, cur->len);
+
+        if (ret == -2 || ret == -1) {
+            continue;
+        }
+    }
+
+    /* Interpret cfl_kvlist as logs type of events later. */
+    ret = append_enumerate_data(ctx, kvlist);
+
+    if (kvlist) {
+        cfl_kvlist_destroy(kvlist);
+    }
+
+    if (ret == FLB_EVENT_ENCODER_SUCCESS) {
+        ret = flb_log_event_encoder_commit_record(ctx->log_encoder);
+    }
+
+    *out_data = ctx->log_encoder->output_buffer;
+    *out_size = ctx->log_encoder->output_length;
+
+    return 0;
+
+split_error:
+    *out_data = NULL;
+    *out_size = 0;
+
+    return -1;
+}
+
 static struct flb_config_map config_map[] = {
     {
       FLB_CONFIG_MAP_STR, "path", (char *)NULL,
@@ -715,5 +783,9 @@ struct flb_input_plugin in_systemd_plugin = {
     .cb_resume    = in_systemd_resume,
     .cb_exit      = in_systemd_exit,
     .config_map   = config_map,
+
+    /* for testing */
+    .test_formatter.callback = cb_systemd_format_test,
+
     .flags        = 0
 };

@@ -699,6 +699,10 @@ static int cb_systemd_format_test(struct flb_config *config,
         cfl_kvlist_destroy(kvlist);
     }
 
+    if (kvs != NULL) {
+        cfl_utils_split_free(kvs);
+    }
+
     if (ret == FLB_EVENT_ENCODER_SUCCESS) {
         ret = flb_log_event_encoder_commit_record(ctx->log_encoder);
     }

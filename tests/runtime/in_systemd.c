@@ -63,7 +63,7 @@ void flb_test_duplicated_keys()
     int in_ffd;
     int out_ffd;
     flb_ctx_t *ctx;
-    flb_sds_t message = "MESSAGE=test native message with multiple values\nKEY=value1\nKEY=value4\n"
+    char *message = "MESSAGE=test native message with multiple values\nKEY=value1\nKEY=value4\n"
         "KEY2=value2\nKEY=another\nKEY2=value3\nKEY2=value5\nKEY3=howdy\nKEY3=prettygood\nKEY2=value10\n"
         "KEY3=wow\nKEY2=final_field\n";
 
@@ -98,7 +98,7 @@ void flb_test_duplicated_keys()
     TEST_CHECK(ret == 0);
 
     /* Ingest data sample */
-    ret = flb_input_run_formatter(ctx, in_ffd, message, flb_sds_len(message));
+    ret = flb_input_run_formatter(ctx, in_ffd, message, strlen(message));
 
     sleep(2);
     flb_stop(ctx);

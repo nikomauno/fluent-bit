@@ -97,8 +97,9 @@ void flb_test_duplicated_keys()
     ret = flb_start(ctx);
     TEST_CHECK(ret == 0);
 
-    /* Ingest data sample */
-    ret = flb_input_run_formatter(ctx, in_ffd, message, strlen(message));
+    /* Ingest data sample to run test formatter */
+    ret = flb_lib_push(ctx, in_ffd, message, strlen(message));
+    TEST_CHECK(ret == 0);
 
     sleep(2);
     flb_stop(ctx);

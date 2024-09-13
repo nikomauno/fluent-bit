@@ -785,6 +785,10 @@ struct flb_http_client *flb_http_client(struct flb_connection *u_conn,
     c->resp.data_size = FLB_HTTP_DATA_SIZE_MAX;
     c->resp.data_size_max = FLB_HTTP_DATA_SIZE_MAX;
 
+    /* Tests */
+    c->test_mode = FLB_FALSE;
+    c->test_response.callback = NULL;
+
     return c;
 }
 
@@ -1066,6 +1070,90 @@ int flb_http_set_callback_context(struct flb_http_client *c,
 {
     c->cb_ctx = cb_ctx;
     return 0;
+}
+
+int flb_http_set_response_test(struct flb_http_client *c, char *test_name,
+                               const void *data, size_t len,
+                               int status,
+                               void (*resp_callback) (void *, int, void *, size_t, void *),
+                               void *resp_callback_data)
+{
+    if (!c) {
+        return -1;
+    }
+
+    /*
+     * Enabling a test, set the http_client instance in 'test' mode, so no real
+     * http request is invoked, only the desired implemented test.
+     */
+
+    /* Response test */
+    if (strcmp(test_name, "response") == 0) {
+        c->test_mode = FLB_TRUE;
+        c->test_response.rt_ctx = c;
+        c->test_response.rt_status = status;
+        c->test_response.rt_resp_callback = resp_callback;
+        c->test_response.rt_data = resp_callback_data;
+        if (data != NULL && len > 0) {
+            c->resp.payload = (char *)data;
+            c->resp.payload_size = len;
+        }
+    }
+    else {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int flb_http_run_response_test(struct flb_http_client *c,
+                                      const void *data, size_t len)
+{
+    int ret;
+    void *out_buf = NULL;
+    size_t out_size = 0;
+    struct flb_test_http_response  *htr;
+
+    if (!c) {
+        return -1;
+    }
+
+    htr = &c->test_response;
+
+    /* Invoke the output plugin formatter test callback */
+    ret = htr->callback(c,
+                        data, len,
+                        &out_buf, &out_size);
+
+    /* Call the runtime test callback checker */
+    if (htr->rt_resp_callback) {
+        htr->rt_resp_callback(htr->rt_ctx,
+                              ret,
+                              out_buf, out_size,
+                              htr->rt_data);
+    }
+    else {
+        flb_free(out_buf);
+    }
+
+    return 0;
+}
+
+/* Push some response into the http client */
+static int flb_http_stub_response(struct flb_http_client *c)
+{
+    int ret;
+
+    if (!c) {
+        return -1;
+    }
+
+    /* If http client's test_responses is registered, run the stub. */
+    if (c->test_response.callback != NULL && c->resp.payload != NULL) {
+        ret = flb_http_run_response_test(c, c->resp.payload, c->resp.payload_size);
+    }
+
+    return ret;
 }
 
 int flb_http_add_auth_header(struct flb_http_client *c,
@@ -1358,6 +1446,10 @@ int flb_http_get_response_data(struct flb_http_client *c, size_t bytes_consumed)
 int flb_http_do(struct flb_http_client *c, size_t *bytes)
 {
     int ret;
+
+    if (c->test_mode == FLB_TRUE) {
+        return flb_http_stub_response(c);
+    }
 
     ret = flb_http_do_request(c, bytes);
     if (ret != 0) {

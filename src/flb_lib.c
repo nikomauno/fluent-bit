@@ -682,7 +682,7 @@ static int flb_input_run_formatter(flb_ctx_t *ctx, struct flb_input_instance *i_
 
     itf = &i_ins->test_formatter;
 
-    /* Invoke the output plugin formatter test callback */
+    /* Invoke the input plugin formatter test callback */
     ret = itf->callback(ctx->config,
                         i_ins,
                         i_ins->context,

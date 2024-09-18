@@ -214,6 +214,13 @@ struct flb_http_client *flb_http_client(struct flb_connection *u_conn,
                                         const char *host, int port,
                                         const char *proxy, int flags);
 
+/* For fulfilling HTTP response testing (dummy client) */
+struct flb_http_client *flb_http_dummy_client(struct flb_connection *u_conn,
+                                              int method, const char *uri,
+                                              const char *body, size_t body_len,
+                                              const char *host, int port,
+                                              const char *proxy, int flags);
+
 int flb_http_add_header(struct flb_http_client *c,
                         const char *key, size_t key_len,
                         const char *val, size_t val_len);
